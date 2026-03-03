@@ -143,7 +143,8 @@ def ejecutar_estrategia_en_vivo(
             "Close": float(datos['Close'].iloc[i]), "SMA_Rapida": float(datos['SMA_Rapida'].iloc[i]),
             "SMA_Lenta": float(datos['SMA_Lenta'].iloc[i]), "Senal": float(datos['Senal'].iloc[i]),
             "Retorno_Neto": float(datos['Retorno_Neto'].iloc[i]), "Retorno_Mercado": float(datos['Retorno_Mercado'].iloc[i]),
-            "Capital": float(datos['Capital_Total'].iloc[i]) # nuevo capital total 
-        })
+            "Capital": float(datos['Capital_Total'].iloc[i]), # nuevo capital total 
+            "volumen": int(datos['Volume'].iloc[i]) # nuevo volumen para análisis de liquidez
+        }) 
         
     return paquete_json
