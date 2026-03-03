@@ -4,7 +4,7 @@ import yfinance as yf
 import pandas as pd
 import numpy as np
 
-app = FastAPI(title="Motor Quant Alpha", version="11.0")
+app = FastAPI(title="Motor Quant Alpha", version="12.0")
 
 app.add_middleware(
     CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"],
@@ -12,7 +12,7 @@ app.add_middleware(
 
 @app.get("/")
 def estado_servidor():
-    return {"mensaje": "Servidor Quant con Gestión de Riesgo en línea."}
+    return {"mensaje": "Servidor Quant de Grado Institucional en línea."}
 
 @app.get("/api/backtest")
 def ejecutar_estrategia_en_vivo(
@@ -30,16 +30,16 @@ def ejecutar_estrategia_en_vivo(
     if len(datos) == 0: return {"error": f"No se encontraron datos para {ticker}."}
     if isinstance(datos.columns, pd.MultiIndex): datos.columns = datos.columns.get_level_values(0)
 
-    # 1. Filtros Técnicos Base
+    # 1. Filtros Técnicos
     datos['SMA_Rapida'] = datos['Close'].squeeze().rolling(window=sma_rapida).mean()
     datos['SMA_Lenta'] = datos['Close'].squeeze().rolling(window=sma_lenta).mean()
 
-    # 2. Señales de Trading (Cruce de Medias)
+    # 2. Señales de Trading Bi-Direccionales
     datos['Senal_Tecnica'] = 0
-    datos.loc[datos['SMA_Rapida'] > datos['SMA_Lenta'], 'Senal_Tecnica'] = 1
-    datos.loc[datos['SMA_Rapida'] < datos['SMA_Lenta'], 'Senal_Tecnica'] = -1
+    datos.loc[datos['SMA_Rapida'] > datos['SMA_Lenta'], 'Senal_Tecnica'] = 1  # LONG
+    datos.loc[datos['SMA_Rapida'] < datos['SMA_Lenta'], 'Senal_Tecnica'] = -1 # SHORT
 
-    # --- 🛡️ MOTOR DE RIESGO INSTITUCIONAL (CAPITAL Y SLIPPAGE) ---
+    # --- 🛡️ MOTOR DE RIESGO: PREDADOR BAJISTA ---
     posicion_actual = 0
     precio_entrada = 0
     
@@ -52,47 +52,69 @@ def ejecutar_estrategia_en_vivo(
         precio_actual = float(datos['Close'].iloc[i])
         senal_tec = float(datos['Senal_Tecnica'].iloc[i])
         
-        # 1. Evaluar Freno de Emergencia (Stop-Loss) o Toma de Ganancias (Take-Profit)
-        if posicion_actual == 1:
+        # 1. Evaluar Freno de Emergencia o Toma de Ganancias
+        if posicion_actual == 1: # Si estamos LONG
             rendimiento = ((precio_actual - precio_entrada) / precio_entrada) * 100
             if rendimiento <= -sl or rendimiento >= tp:
                 posicion_actual = 0  
-                # VENTA REAL con Slippage
                 precio_ejecucion = precio_actual * (1 - slippage) 
                 efectivo = acciones * precio_ejecucion
                 acciones = 0  
                 
-        elif posicion_actual == -1:
+        elif posicion_actual == -1: # Si estamos SHORT
+            # En Short, ganamos si el precio cae
             rendimiento = ((precio_entrada - precio_actual) / precio_entrada) * 100
             if rendimiento <= -sl or rendimiento >= tp:
                 posicion_actual = 0 
+                precio_ejecucion = precio_actual * (1 + slippage)
+                # Ganancia = (Precio Venta Inicial - Precio Compra Final) * acciones prestadas
+                ganancia_perdida = (precio_entrada - precio_ejecucion) * acciones
+                efectivo = efectivo + ganancia_perdida
+                acciones = 0
 
-        # 2. Leer la estrategia técnica si estamos fuera del mercado (Cash)
+        # 2. Entrar al Mercado
         if posicion_actual == 0 and senal_tec != 0:
             posicion_actual = senal_tec
-            if posicion_actual == 1:  
-                # COMPRA REAL con Slippage
+            if posicion_actual == 1:  # LONG ENTRY
                 precio_ejecucion = precio_actual * (1 + slippage)
                 acciones = efectivo / precio_ejecucion 
+                precio_entrada = precio_ejecucion
                 efectivo = 0 
-            precio_entrada = precio_actual
+            elif posicion_actual == -1: # SHORT ENTRY
+                precio_ejecucion = precio_actual * (1 - slippage)
+                acciones = efectivo / precio_ejecucion # Pedimos prestado este número de acciones
+                precio_entrada = precio_ejecucion
+                # El efectivo se queda como garantía (Collateral)
             
         senales_finales.append(posicion_actual)
         
-        # 3. Auditoría diaria bancaria
-        capital_hoy = efectivo + (acciones * precio_actual)
+        # 3. Auditoría diaria del Capital
+        if posicion_actual == 1:
+            capital_hoy = efectivo + (acciones * precio_actual)
+        elif posicion_actual == -1:
+            # Capital Short = Garantía + Ganancia/Pérdida Flotante
+            ganancia_perdida_flotante = (precio_entrada - precio_actual) * acciones
+            capital_hoy = efectivo + ganancia_perdida_flotante
+        else:
+            capital_hoy = efectivo
+
         historial_capital.append(capital_hoy)
 
-    # Inyectamos los datos a Pandas
+    # Inyectamos los datos al DataFrame
     datos['Senal'] = senales_finales
     datos['Capital_Total'] = historial_capital
-    
-    # --- Cálculo de retornos para las tarjetas de React ---
     datos['Retorno_Mercado'] = datos['Close'].squeeze().pct_change().fillna(0)
-    # Calculamos el % de ganancia del bot basándonos en la mutación del dinero real
     datos['Retorno_Neto'] = pd.Series(historial_capital).pct_change().fillna(0).values
 
-    # 4. Empaquetado OHLC para React
+    # --- 📐 AUDITORÍA SHARPE RATIO ---
+    desviacion_diaria = datos['Retorno_Neto'].std()
+    # Asumimos Tasa Libre de Riesgo de 0% para simplificar el cálculo puro del bot
+    sharpe_ratio = 0.0
+    if desviacion_diaria > 0:
+        # Multiplicamos por la raíz de 252 (días bursátiles del año) para anualizarlo
+        sharpe_ratio = (datos['Retorno_Neto'].mean() / desviacion_diaria) * np.sqrt(252)
+
+    # 4. Empaquetado
     datos = datos.fillna(0)
     datos.reset_index(inplace=True)
     datos['Date'] = datos['Date'].dt.strftime('%Y-%m-%d')
@@ -104,10 +126,9 @@ def ejecutar_estrategia_en_vivo(
             "High": float(datos['High'].iloc[i]), "Low": float(datos['Low'].iloc[i]),
             "Close": float(datos['Close'].iloc[i]), "SMA_Rapida": float(datos['SMA_Rapida'].iloc[i]),
             "SMA_Lenta": float(datos['SMA_Lenta'].iloc[i]), "Senal": float(datos['Senal'].iloc[i]),
-            "Retorno_Neto": float(datos['Retorno_Neto'].iloc[i]), 
-            "Retorno_Mercado": float(datos['Retorno_Mercado'].iloc[i]),
-            "Capital": float(datos['Capital_Total'].iloc[i]),
-            "Volume": int(datos['Volume'].iloc[i]) 
+            "Retorno_Neto": float(datos['Retorno_Neto'].iloc[i]), "Retorno_Mercado": float(datos['Retorno_Mercado'].iloc[i]),
+            "Capital": float(datos['Capital_Total'].iloc[i]), "Volume": int(datos['Volume'].iloc[i]),
+            "Sharpe": float(sharpe_ratio) # Inyectamos el Sharpe al Frontend
         })
 
     return paquete_json
